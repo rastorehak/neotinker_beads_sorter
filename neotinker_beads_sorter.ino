@@ -3,6 +3,7 @@
 #include <ESP32Servo.h>
 #include <TM1637.h>
 #include <LittleFS.h>
+#include "color_classifier.h"
 
 
 // =========================
@@ -31,12 +32,12 @@ constexpr int IN4 = 13;
 // SW constants
 // =========================
 
-constexpr int SERVO_TRUE = 140;
+constexpr int SERVO_TRUE = 135; //140
 constexpr int SERVO_FALSE = 45;
 
-constexpr int N = 11;
+constexpr int N = COLOR_FEATURE_COUNT;
 constexpr int NUM_CLASSES = 15;
-constexpr int MAX_SAMPLES = 20;
+constexpr int MAX_SAMPLES = 30;
 
 // Stepper Motor Constants
 constexpr int STEPS_PER_REV = 2048;
@@ -107,10 +108,10 @@ public:
         for (int i = 0; i < 4; i++)
             digitalWrite(pins[i], 0);
 
-        servo1.detach();
-        servo2.detach();
-        servo3.detach();
-        servo4.detach();
+        // servo1.detach();
+        // servo2.detach();
+        // servo3.detach();
+        // servo4.detach();
     }
 
     void doStep() {
@@ -175,77 +176,11 @@ void IRAM_ATTR buttonISR() {
 // HELPERS
 // =========================
 
-void normalizeSpectrum(float *input, float *output) {
-
-    float sum = 0;
-    for (int i = 0; i < 8; i++) sum += input[i] / input[8];
-
-    if (sum < 1e-6) sum = 1e-6;
-
-    for (int i = 0; i < N-1; i++) {
-        output[i] = input[i] / input[8];
-    }
-    output[N-1] = (log10f(input[8])) / 8.0f;
-    output[8] = sum / 8;
-}
-
-
-float spectralDistance(float *a, float *b) {
-    float sum = 0;
-    for (int i = 0; i < N; i++) {
-        float d = a[i] - b[i];
-        sum += d * d;
-    }
-    return sqrt(sum);
-}
-
-
-
 int classify(float *input) {
-    // Find 10 closest points from entire trainingData
-    const int K = 10;
-    float kDist[K];
-    int kClass[K];
-    for (int i = 0; i < K; i++) {
-        kDist[i] = 999.0f;
-        kClass[i] = -1;
-    }
-
-    for (int c = 0; c < NUM_CLASSES; c++) {
-        for (int s = 0; s < sampleCount[c]; s++) {
-            float dist = spectralDistance(input, trainingData[c][s]);
-            // insert into sorted top-K list
-            if (dist < kDist[K - 1]) {
-                kDist[K - 1] = dist;
-                kClass[K - 1] = c;
-                // bubble up
-                for (int i = K - 1; i > 0 && kDist[i] < kDist[i - 1]; i--) {
-                    float td = kDist[i];
-                    kDist[i] = kDist[i - 1];
-                    kDist[i - 1] = td;
-                    int tc = kClass[i];
-                    kClass[i] = kClass[i - 1];
-                    kClass[i - 1] = tc;
-                }
-            }
-        }
-    }
-
-    // Count votes per class
-    int votes[NUM_CLASSES] = {0};
-    for (int i = 0; i < K; i++) {
-        if (kClass[i] >= 0) votes[kClass[i]]++;
-    }
-
-    // Return class with more than 6 votes, else 0
-    int res = NUM_CLASSES;
-    for (int c = 0; c < NUM_CLASSES; c++) {
-        Serial.print(votes[c]);
-        Serial.print(",");
-        if (votes[c] > 7) res = c;
-    }
-    Serial.println();
-    return res;
+    int result = classifySpectrum(input, trainingData, sampleCount);
+    Serial.print("CLASS: ");
+    Serial.println(result);
+    return result;
 }
 
 
@@ -253,22 +188,22 @@ void setServos(int value) {
     static int lastValue = -1;
     int changed = value ^ (lastValue < 0 ? ~value : lastValue); // bits that changed
     lastServoChange = millis();
-    if (changed & 0x1) {
+//    if (changed & 0x1) {
         servo1.attach(SERVO1_PIN);
         servo1.write((value & 0x1) ? SERVO_TRUE : SERVO_FALSE);
-    }
-    if (changed & 0x2) {
+  //  }
+  //  if (changed & 0x2) {
         servo2.attach(SERVO2_PIN);
         servo2.write((value & 0x2) ? SERVO_TRUE : SERVO_FALSE);
-    }
-    if (changed & 0x4) {
+    // }
+    // if (changed & 0x4) {
         servo3.attach(SERVO3_PIN);
         servo3.write((value & 0x4) ? SERVO_TRUE : SERVO_FALSE);
-    }
-    if (changed & 0x8) {
+    // }
+    // if (changed & 0x8) {
         servo4.attach(SERVO4_PIN);
-        servo4.write((value & 0x8) ? SERVO_TRUE : SERVO_FALSE);
-    }
+        servo4.write((value & 0x8) ? SERVO_FALSE : SERVO_TRUE);
+//    }
 
     lastValue = value;
 }
@@ -344,11 +279,19 @@ void saveTrainingToFlash() {
         return;
     }
 
-    file.write((uint8_t *) trainingData, sizeof(trainingData));
-    file.write((uint8_t *) sampleCount, sizeof(sampleCount));
+    const TrainingFileHeader header = {
+        TRAINING_FILE_MAGIC,
+        TRAINING_FILE_VERSION,
+        NUM_CLASSES,
+        MAX_SAMPLES,
+        N
+    };
+    const bool saved = file.write((uint8_t *) &header, sizeof(header)) == sizeof(header) &&
+                       file.write((uint8_t *) trainingData, sizeof(trainingData)) == sizeof(trainingData) &&
+                       file.write((uint8_t *) sampleCount, sizeof(sampleCount)) == sizeof(sampleCount);
     file.close();
 
-    Serial.println("Training data saved to flash");
+    Serial.println(saved ? "Training data saved to flash" : "Failed to save training data");
 }
 
 void loadTrainingFromFlash() {
@@ -358,59 +301,67 @@ void loadTrainingFromFlash() {
         return;
     }
 
-    file.read((uint8_t *) trainingData, sizeof(trainingData));
-    file.read((uint8_t *) sampleCount, sizeof(sampleCount));
+    TrainingFileHeader header;
+    int loadedSampleCount[NUM_CLASSES];
+    bool loaded = trainingFileSizeIsValid(file.size(), sizeof(TrainingFileHeader),
+                                          sizeof(trainingData), sizeof(sampleCount)) &&
+                  file.read((uint8_t *) &header, sizeof(header)) == sizeof(header) &&
+                  trainingHeaderIsCompatible(header, NUM_CLASSES, MAX_SAMPLES, N) &&
+                  file.read((uint8_t *) trainingData, sizeof(trainingData)) == sizeof(trainingData) &&
+                  file.read((uint8_t *) loadedSampleCount, sizeof(loadedSampleCount)) == sizeof(loadedSampleCount) &&
+                  trainingSampleCountsAreValid(loadedSampleCount, NUM_CLASSES, MAX_SAMPLES);
     file.close();
 
-    // Validate loaded sampleCount
-    for (int c = 0; c < NUM_CLASSES; c++) {
-        if (sampleCount[c] < 0 || sampleCount[c] > MAX_SAMPLES) {
-            Serial.print("Resetting invalid sampleCount[");
-            Serial.print(c);
-            Serial.print("]: ");
-            Serial.println(sampleCount[c]);
-            sampleCount[c] = 0;
-        }
+    if (!loaded) {
+        for (int c = 0; c < NUM_CLASSES; c++) sampleCount[c] = 0;
+        Serial.println("Training data is incompatible or invalid; retrain colors");
+        return;
     }
 
+    for (int c = 0; c < NUM_CLASSES; c++) sampleCount[c] = loadedSampleCount[c];
 
     Serial.println("Training data loaded from flash");
 }
+void dumpData()
+{
+    File f = LittleFS.open("/training.bin", FILE_READ);
 
-void dumpData() {
-    for (int c = 0; c < NUM_CLASSES; c++) {
-        Serial.print(sampleCount[c]);
-        for (int s = 0; s < MAX_SAMPLES; s++) {
-            for (int k = 0; k < N; k++) {
-                Serial.print(",");
-                Serial.print(trainingData[c][s][k], 6);
-            }
-        }
-        Serial.println();
+    uint32_t size = f.size();
+
+    Serial.write((uint8_t *)&size, sizeof(size));
+
+    uint8_t buf[256];
+
+    while (f.available()) {
+        size_t n = f.read(buf, sizeof(buf));
+        Serial.write(buf, n);
     }
+
+    f.close();
 }
 
-void loadData() {
-    Serial.println("Ready to receive data...");
-    // We expect NUM_CLASSES lines of CSV
-    for (int c = 0; c < NUM_CLASSES; c++) {
-        // Read sampleCount[c]
-        while(!Serial.available());
-        String val = Serial.readStringUntil(',');
-        sampleCount[c] = val.toInt();
+void loadData(uint32_t size)
+{
+    File f = LittleFS.open("/training.bin", FILE_WRITE);
 
-        for (int s = 0; s < MAX_SAMPLES; s++) {
-            for (int k = 0; k < N; k++) {
-                while(!Serial.available());
-                String val = Serial.readStringUntil(',');
-                trainingData[c][s][k] = val.toFloat();
-            }
+    uint8_t buf[256];
+    uint32_t received = 0;
+
+    while (received < size) {
+
+        int wanted = min((uint32_t)sizeof(buf), size - received);
+
+        int n = Serial.readBytes((char*)buf, wanted);
+
+        if (n > 0) {
+            f.write(buf, n);
+            received += n;
         }
-        // Consume the rest of the line (or newline)
-        Serial.readStringUntil('\n'); 
     }
-    saveTrainingToFlash();
-    Serial.println("Data loaded and saved.");
+
+    f.close();
+
+    Serial.println("OK");
 }
 
 // =========================
@@ -422,10 +373,12 @@ void loop() {
     if (Serial.available() > 0) {
         String cmd = Serial.readStringUntil('\n');
         cmd.trim();
+
         if (cmd == "DUMP") {
             dumpData();
-        } else if (cmd == "LOAD") {
-            loadData();
+        }
+        else if (cmd.startsWith("LOAD ")) {
+            loadData(cmd.substring(5).toInt());
         }
     }
 
@@ -475,8 +428,10 @@ void loop() {
             appMode = MODE_WAIT;
             trainingMode = false;
             motor.stop();
-            display.displayClear();
+            //display.displayClear();
+            display.displayInt(5555,false);
             Serial.println("WAIT MODE");
+            setServos(15);
             return;
         }
         return;
@@ -529,7 +484,8 @@ void loop() {
         if (btnPressed) {
             appMode = MODE_WAIT;
             motor.stop();
-            display.displayClear();
+            //display.displayClear();
+            display.displayInt(5555,false);
             Serial.println("WAIT MODE");
             return;
         }
@@ -542,11 +498,11 @@ void loop() {
     };
     //  Serial.println(readings[11]);
 
-if ( (millis()- lastServoChange)>800) {
-    servo1.detach();
-    servo2.detach();
-    servo3.detach();
-    servo4.detach();
+if ( (millis()- lastServoChange)>1000) {
+    // servo1.detach();
+    // servo2.detach();
+    // servo3.detach();
+    // servo4.detach();
 }
 
 
@@ -554,10 +510,6 @@ if ( (millis()- lastServoChange)>800) {
 
         digitalWrite(IR_LED, HIGH);
         delay(250);
-        // servo1.detach();
-        // servo2.detach();
-        // servo3.detach();
-        // servo4.detach();
         delay(10);
 
         as7341.setATIME(29);
@@ -581,26 +533,25 @@ if ( (millis()- lastServoChange)>800) {
         raw[9] = readings[11];
 
 
-        normalizeSpectrum(raw, norm);
-
-        uint16_t maxVal = 0;
-        for (int i = 0; i < 12; i++) {
-            if (readings[i] > maxVal) maxVal = readings[i];
-        }
-        if (trainingMode) {
+        if (!normalizeSpectrum(raw, norm)) {
+            Serial.println("Rejected invalid or saturated sensor reading");
+            if (!trainingMode && appMode == MODE_RUN) {
+                display.displayInt(NUM_CLASSES, true);
+                setServos(NUM_CLASSES);
+            }
+        } else if (trainingMode) {
+            Serial.print(currentClass);
+            for (int i = 0; i < 10; i++) {
+                Serial.print(",");
+                Serial.print(raw[i], 0);
+            }
+            Serial.println();
             int id = sampleCount[currentClass];
-
             if (id < MAX_SAMPLES) {
-
-                for (int i = 0; i < N; i++)
+                for (int i = 0; i < N; i++) {
                     trainingData[currentClass][id][i] = norm[i];
-
+                }
                 sampleCount[currentClass]++;
-
-                Serial.print("Stored ");
-                Serial.print(currentClass);
-                Serial.print(" #");
-                Serial.println(sampleCount[currentClass]);
             }
         } else {
             int cls = classify(norm);
@@ -612,11 +563,11 @@ if ( (millis()- lastServoChange)>800) {
                 // Serial.print(" -> ");
 
                 setServos(cls);
-                for (int i = 0; i < N; i++) {
-                    Serial.print(norm[i], 6);
-                    if (i < N - 1) Serial.print(",");
-                }
-                Serial.println();
+                // for (int i = 0; i < N; i++) {
+                //     Serial.print(norm[i], 6);
+                //     if (i < N - 1) Serial.print(",");
+                // }
+                // Serial.println();
             }
         }
         as7341.setATIME(9);

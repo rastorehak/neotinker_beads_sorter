@@ -23,3 +23,11 @@ Go to Tools -> Board -> Boards Manager..., search for esp32 by Espressif Systems
 Select your board under Tools -> Board -> esp32 -> ESP32 Dev Module.
 4.
 Set the Serial Monitor baud rate to 115200 (Tools -> Serial Monitor).
+
+## Spectral Classification
+
+The classifier uses the eight visible AS7341 channels normalized by their total, plus a lightly weighted logarithmic brightness feature. Clear and NIR remain in the serial training log but are not used as color features. Readings with a visible-channel sum below 100 counts or any selected raw channel at or above 18,000 counts are ignored; confirm this provisional saturation cutoff with the sensor and exposure settings in use.
+
+The six-neighbor classifier starts with a maximum feature distance of 0.02 and requires a weighted-vote margin of at least 3. These thresholds are starting points, not calibrated guarantees; validate them with held-out beads and orientations. A rejected or uncertain reading is returned as class 15. Verify that the machine's actuator arrangement routes this value to a safe reject position before sorting.
+
+Training stores up to 30 valid readings per color. The feature layout and capacity changed, so existing `/training.bin` files are rejected; enter training mode and collect new data before normal sorting. The current text dataset does not identify individual beads, so its sample-level validation cannot establish accuracy on unseen beads.
