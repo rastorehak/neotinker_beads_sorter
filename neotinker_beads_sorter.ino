@@ -429,7 +429,9 @@ void loop() {
             trainingMode = false;
             motor.stop();
             //display.displayClear();
-            display.displayInt(5555,false);
+            char message[] = "SLEP";
+            display.displayPChar(message);
+
             Serial.println("WAIT MODE");
             setServos(15);
             return;
@@ -474,6 +476,8 @@ void loop() {
             appMode = MODE_RUN;
             trainingMode = false;
             motor.start();
+            char message[] = "RUN";
+            display.displayPChar(message);
             Serial.println("RUN MODE");
         }
         return;
@@ -485,7 +489,8 @@ void loop() {
             appMode = MODE_WAIT;
             motor.stop();
             //display.displayClear();
-            display.displayInt(5555,false);
+            char message[] = "SLEP";
+            display.displayPChar(message);
             Serial.println("WAIT MODE");
             return;
         }
